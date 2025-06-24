@@ -40,6 +40,7 @@
 #include <unordered_map>
 
 using namespace ns3;
+using namespace std;
 
 NS_LOG_COMPONENT_DEFINE("GENERIC_SIMULATION");
 
@@ -120,6 +121,79 @@ std::vector<double> enterprise_prob;
 
 std::set<double> probs;
 std::unordered_map<double, int> size_map;
+
+std::ifstream topof, flowf, tracef;
+NodeContainer n;
+// maintain port number for each host pair
+std::unordered_map<uint32_t, unordered_map<uint32_t, uint16_t>> portNumder;
+
+struct FlowInput
+{
+    uint32_t src, dst, pg, maxPacketCount, port, dport;
+    double start_time;
+    uint32_t idx;
+};
+
+FlowInput flow_input = {0};
+uint32_t flow_num = 0;
+
+// void
+// ReadFlowInput()
+// {
+//     if (flow_input.idx < flow_num)
+//     {
+//         flowf >> flow_input.src >> flow_input.dst >> flow_input.pg >> flow_input.dport >>
+//             flow_input.maxPacketCount >> flow_input.start_time;
+
+//         auto srcNode = n.Get(flow_input.src);
+//         auto dstNode = n.Get(flow_input.dst);
+
+//         NS_LOG_DEBUG("[Debug] Flow #" << flow_input.idx << " src=" << flow_input.src
+//                   << " (type=" << srcNode->GetNodeType() << ")"
+//                   << ", dst=" << flow_input.dst << " (type=" << dstNode->GetNodeType() << ")"
+//                   << std::endl);
+//         NS_ASSERT(n.Get(flow_input.src)->GetNodeType() == 0 &&
+//                   n.Get(flow_input.dst)->GetNodeType() == 0);
+//     }
+// }
+
+// void
+// ScheduleFlowInputs()
+// {
+//     while (flow_input.idx < flow_num && Seconds(flow_input.start_time) == Simulator::Now())
+//     {
+//         size_t winSize = (global_t == 1 ? maxBdp : pairBdp[n.Get(flow_input.src)][n.Get(flow_input.dst)]);
+//         // has_win is effective in all cases except when use_coding_transport is true and pg != 2.
+//         // In other words, when use_coding_transport is true, only pg==2 flows can use has_win.
+//         bool isSetWin = has_win && (!use_coding_transport || flow_input.pg == 2);
+//         uint32_t port = portNumder[flow_input.src][flow_input.dst]++; // get a new port number
+//         RdmaClientHelper clientHelper(
+//             flow_input.pg,
+//             serverAddress[flow_input.src],
+//             serverAddress[flow_input.dst],
+//             port,
+//             flow_input.dport,
+//             flow_input.maxPacketCount,
+//             isSetWin ? winSize : 0,
+//             global_t == 1 ? maxRtt : pairRtt[flow_input.src][flow_input.dst]);
+//         ApplicationContainer appCon = clientHelper.Install(n.Get(flow_input.src));
+//         appCon.Start(Time(0));
+
+//         // get the next flow input
+//         flow_input.idx++;
+//         ReadFlowInput();
+//     }
+
+//     // schedule the next time to run this function
+//     if (flow_input.idx < flow_num)
+//     {
+//         Simulator::Schedule(Seconds(flow_input.start_time) - Simulator::Now(), ScheduleFlowInputs);
+//     }
+//     else
+//     { // no more flows, close the file
+//         flowf.close();
+//     }
+// }
 
 bool poison_distr = true;
 int main(int argc, char *argv[])
@@ -314,6 +388,13 @@ int main(int argc, char *argv[])
 							  << "\n";
 				}
 			}
+			else if (key.compare("TOPOLOGY_FILE") == 0)
+            {
+                std::string v;
+                conf >> v;
+                topology_file = v;
+                std::cout << "TOPOLOGY_FILE\t\t\t" << topology_file << "\n";
+            }
 			else if (key.compare("ENABLE_BUFFER_STATS") == 0)
 			{
 				uint32_t v;
@@ -455,20 +536,34 @@ int main(int argc, char *argv[])
 	}
 	double flows_per_sec = flow_rate / (avg_flow_size * 8.0);
 
-	node_num = 144;
-	switch_num = 16;
-	uint32_t end_num = 128;
+	// node_num = 144;
+	// switch_num = 16;
 	//std::cerr<<node_num<<" "<<switch_num<<"\n";
 	// uint64_t dst_port[node_num-switch_num] = { 0 };
-	NodeContainer n;
+
+	// Create topology here
+	topof.open(topology_file.c_str());
+	topof >> node_num >> switch_num >> link_num;
+	uint32_t end_num = node_num - switch_num;
+	std::cout << "Node num: " << node_num << std::endl;
+	std::vector<uint32_t> node_type(node_num, 0);
+    for (uint32_t i = 0; i < switch_num; i++)
+    {
+        uint32_t sid;
+        topof >> sid;
+        node_type[sid] = 1;
+    }
+
 	n.Create(node_num);
-	for (uint32_t i = 0; i < switch_num; i++)
+	for (uint32_t i = 0; i < node_num; i++)
 	{
-		uint32_t sid = end_num + i;
-		n.Get(sid)->SetNodeType(1, dynamicth); //broadcom switch
+		if (node_type[i] == 1)
+		{
+			n.Get(i)->SetNodeType(1, dynamicth); //broadcom switch
 											   //n.Get(sid)->m_broadcom->SetMarkingThreshold(kmin, kmax, pmax);
-		n.Get(sid)->m_broadcom->SetNode(n.Get(sid), sid);
-		n.Get(sid)->m_broadcom->SetStats(enable_buffer_stats);
+			n.Get(i)->m_broadcom->SetNode(n.Get(i), i);
+			n.Get(i)->m_broadcom->SetStats(enable_buffer_stats);
+		}
 	}
 
 	NS_LOG_INFO("Create nodes.");
@@ -481,7 +576,6 @@ int main(int argc, char *argv[])
 	//
 	// Explicitly create the channels required by the topology.
 	//
-
 	Ptr<RateErrorModel> rem = CreateObject<RateErrorModel>();
 	Ptr<UniformRandomVariable> uv = CreateObject<UniformRandomVariable>();
 	rem->SetRandomVariable(uv);
@@ -491,40 +585,21 @@ int main(int argc, char *argv[])
 
 	QbbHelper qbb;
 	Ipv4AddressHelper ipv4;
-	for (int i = 0; i < end_num; i++)
+
+	// Create servers for all the nodes except the switches whose id is between 0 and switch_num - 1
+	for (int i = 0; i < node_num - switch_num; i++)
 	{
 		UdpServerHelper server0(40000 + i);
 		ApplicationContainer apps0s = server0.Install(n.Get(i));
 		apps0s.Start(Seconds(app_start_time));
 		apps0s.Stop(Seconds(simulator_stop_time));
 	}
-	for (uint32_t i = 0; i < 192; i++) //Why is this 96?
+	for (uint32_t i = 0; i < link_num; i++) //Why is this 96?
 	{
 		uint32_t src, dst;
-		double error_rate = 0;
-		// std::string data_rate, link_delay;
-		//       data_rate="10Gbps";
-		//       link_delay="0.001ms";
+		double error_rate;
+		topof >> src >> dst >> data_rate >> link_delay >> error_rate;
 
-		//std::cout<<data_rate<<"\n";
-		if (i < end_num)
-		{
-			src = end_num + (i / 16);
-			dst = i;
-			//          data_rate="100Gbps";
-			//          qbb.SetDeviceAttribute("DataRate", StringValue(data_rate));
-			// qbb.SetChannelAttribute("Delay", StringValue(link_delay));
-		}
-		else
-		{
-			dst = (i - end_num) / 8 + end_num;
-			src = (i - end_num) % 8 + end_num + 8; // Why 68? CHECK??
-												   //          data_rate="100Gbps";
-												   //          qbb.SetDeviceAttribute("DataRate", StringValue(data_rate));
-												   // qbb.SetChannelAttribute("Delay", StringValue(link_delay));
-		}
-
-		//topof >> src >> dst >> data_rate >> link_delay >> error_rate;
 		qbb.SetDeviceAttribute("DataRate", StringValue(data_rate));
 		qbb.SetChannelAttribute("Delay", StringValue(link_delay));
 
@@ -556,6 +631,7 @@ int main(int argc, char *argv[])
 
 	NS_LOG_INFO("Create Applications.");
 
+	NS_LOG_INFO("Setup Flows Info");
 	uint32_t packetSize = packet_payload_size;
 	//Time interPacketInterval = Seconds(0.0000005 / 2);
 	double interarrival = (packetSize * 8) / (1000000000.0 * datarate);
@@ -579,7 +655,10 @@ int main(int argc, char *argv[])
 		std::cout << "Incast info- "
 				  << "Packet size " << packet_size_incast << "Num of sources " << num_sources << "\n";
 	}
-	//std::cout<<"StartTime "<<start_time<<" App Start "<<app_start_time<<"\n";
+
+	// Create flow at here
+	NS_LOG_INFO("Create Flows");
+	NS_LOG_INFO("start_time " << start_time << " app_stop_time " << app_stop_time);
 	while (start_time < app_stop_time)
 	{
 		flownum += 1;
@@ -612,9 +691,9 @@ int main(int argc, char *argv[])
 		double lower_probability = *(higher_prob);
 		int higher_size = size_map[higher_probability];
 		int size = size_map[lower_probability];
-		//std::cout<<"Hs "<<higher_size<<"size "<<size<<"\n";
+		// std::cout<<"Hs "<<higher_size<<"size "<<size<<"\n";
 		int flow_size = size + (higher_size - size) * ((higher_probability - flow_size_helper) / (higher_probability - lower_probability));
-		//std::cout<<flow_size<<"\n";
+		// std::cout<<"Flow size "<<flow_size<<"\n";
 		int flow_packet_size;
 		if (flow_size <= packetSize)
 		{
@@ -635,7 +714,8 @@ int main(int argc, char *argv[])
 			maxPacketCount += 1;
 		}
 
-		std::cout << "New Flow Created Src " << src << " Dst " << dst << " Size " << maxPacketCount * (flow_packet_size) << " Time " << std::setprecision(10) << start_time << "\n";
+		// std::cout << "New Flow Created Src " << src << " Dst " << dst << " Size " << maxPacketCount * (flow_packet_size) << " Time " << std::setprecision(10) << start_time << "\n";
+		// NS_LOG_INFO("New Flow Created Src " << src << " Dst " << dst << " Size " << maxPacketCount * (flow_packet_size) << " Time " << std::setprecision(10) << start_time);
 		//if(flownum%1000==0) std::cout<<"New Flow Created Src "<<src<<" Dst "<<dst<<" FlowNum "<<flownum<<"Packets "<<maxPacketCount<<" Priority "<<pg<<"\n";
 		NS_ASSERT(n.Get(src)->GetNodeType() == 0 && n.Get(dst)->GetNodeType() == 0);
 		Ptr<Ipv4> ipv4 = n.Get(dst)->GetObject<Ipv4>();
