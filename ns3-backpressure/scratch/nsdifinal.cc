@@ -34,6 +34,8 @@
 #include "ns3/broadcom-node.h"
 #include "ns3/packet.h"
 #include "ns3/error-model.h"
+#include "ns3/qbb-net-device.h"
+#include "ns3/qbb-channel.h"
 #include <random>
 #include <vector>
 #include <set>
@@ -49,6 +51,28 @@ uint32_t packet_payload_size = 1000, l2_chunk_size = 4000, l2_ack_interval = 256
 double pause_time = 5, simulator_stop_time = 3.01, app_start_time = 1.0, app_stop_time = 9.0;
 std::string data_rate, link_delay, topology_file, flow_file, tcp_flow_file, trace_file, trace_output_file;
 bool used_port[65536 * 64] = {0};
+
+struct Interface
+{
+    uint32_t idx;
+    bool up;
+    uint64_t delay;
+    uint64_t bw;
+
+    Interface()
+        : idx(0),
+          up(false)
+    {
+    }
+};
+uint64_t maxRtt = 0, maxBdp = 0;
+map<Ptr<Node>, map<Ptr<Node>, vector<Ptr<Node>>>> nextHop;
+map<Ptr<Node>, map<Ptr<Node>, uint64_t>> pairDelay;
+map<Ptr<Node>, map<Ptr<Node>, uint64_t>> pairTxDelay;
+map<uint32_t, map<uint32_t, uint64_t>> pairBw;
+map<Ptr<Node>, map<Ptr<Node>, uint64_t>> pairBdp;
+map<uint32_t, map<uint32_t, uint64_t>> pairRtt;
+map<Ptr<Node>, map<Ptr<Node>, Interface>> nbr2if;
 
 double cnp_interval = 50, alpha_resume_interval = 55, rp_timer, dctcp_gain = 1 / 16, np_sampling_interval = 0, pmax = 1;
 uint32_t byte_counter, fast_recovery_times = 5, kmax = 60, kmin = 60;
@@ -194,6 +218,71 @@ uint32_t flow_num = 0;
 //         flowf.close();
 //     }
 // }
+
+void
+CalculateRoute(Ptr<Node> host)
+{
+    // queue for the BFS.
+    vector<Ptr<Node>> q;
+    // Distance from the host to each node.
+    map<Ptr<Node>, int> dis;
+    map<Ptr<Node>, uint64_t> delay;
+    map<Ptr<Node>, uint64_t> txDelay;
+    map<Ptr<Node>, uint64_t> bw;
+    // init BFS.
+    q.push_back(host);
+    dis[host] = 0;
+    delay[host] = 0;
+    txDelay[host] = 0;
+    bw[host] = 0xfffffffffffffffflu;
+    // BFS.
+    for (int i = 0; i < (int)q.size(); i++)
+    {
+        Ptr<Node> now = q[i];
+        int d = dis[now];
+        for (auto it = nbr2if[now].begin(); it != nbr2if[now].end(); it++)
+        {
+            // skip down link
+            if (!it->second.up)
+            {
+                continue;
+            }
+            Ptr<Node> next = it->first;
+            // If 'next' have not been visited.
+            if (dis.find(next) == dis.end())
+            {
+                dis[next] = d + 1;
+                delay[next] = delay[now] + it->second.delay;
+                txDelay[next] =
+                    txDelay[now] + packet_payload_size * 1000000000lu * 8 / it->second.bw;
+                bw[next] = std::min(bw[now], it->second.bw);
+                // we only enqueue switch, because we do not want packets to go through host as
+                // middle point
+                if (next->GetNodeType() == 1)
+                {
+                    q.push_back(next);
+                }
+            }
+            // if 'now' is on the shortest path from 'next' to 'host'.
+            if (d + 1 == dis[next])
+            {
+                nextHop[next][host].push_back(now);
+            }
+        }
+    }
+    for (auto it : delay)
+    {
+        pairDelay[it.first][host] = it.second;
+    }
+    for (auto it : txDelay)
+    {
+        pairTxDelay[it.first][host] = it.second;
+    }
+    for (auto it : bw)
+    {
+        pairBw[it.first->GetId()][host->GetId()] = it.second;
+    }
+}
 
 bool poison_distr = true;
 int main(int argc, char *argv[])
@@ -600,6 +689,8 @@ int main(int argc, char *argv[])
 		double error_rate;
 		topof >> src >> dst >> data_rate >> link_delay >> error_rate;
 
+		Ptr<Node> snode = n.Get(src), dnode = n.Get(dst);
+
 		qbb.SetDeviceAttribute("DataRate", StringValue(data_rate));
 		qbb.SetChannelAttribute("Delay", StringValue(link_delay));
 
@@ -619,7 +710,21 @@ int main(int argc, char *argv[])
 		}
 
 		fflush(stdout);
-		NetDeviceContainer d = qbb.Install(n.Get(src), n.Get(dst));
+		NetDeviceContainer d = qbb.Install(snode, dnode);
+
+		// used to create a graph of the topology
+        nbr2if[snode][dnode].up = true;
+        nbr2if[snode][dnode].delay =
+            DynamicCast<QbbChannel>(DynamicCast<QbbNetDevice>(d.Get(0))->GetChannel())
+                ->GetDelay()
+                .GetTimeStep();
+        nbr2if[snode][dnode].bw = DynamicCast<QbbNetDevice>(d.Get(0))->GetDataRate().GetBitRate();
+        nbr2if[dnode][snode].up = true;
+        nbr2if[dnode][snode].delay =
+            DynamicCast<QbbChannel>(DynamicCast<QbbNetDevice>(d.Get(1))->GetChannel())
+                ->GetDelay()
+                .GetTimeStep();
+        nbr2if[dnode][snode].bw = DynamicCast<QbbNetDevice>(d.Get(1))->GetDataRate().GetBitRate();
 
 		char ipstring[16];
 		sprintf(ipstring, "10.%d.%d.0", i / 254 + 1, i % 254 + 1);
@@ -628,6 +733,36 @@ int main(int argc, char *argv[])
 	}
 
 	Ipv4GlobalRoutingHelper::PopulateRoutingTables();
+
+	//
+    // get BDP and delay
+    //
+	for (int i = 0; i < (int)n.GetN(); i++)
+    {
+        Ptr<Node> node = n.Get(i);
+        if (node->GetNodeType() == 0)
+        {
+            CalculateRoute(node);
+        }
+    }
+	// print all delay and tx delay
+	// for (uint32_t i = 0; i < node_num; i++)
+    // {
+    //     if (n.Get(i)->GetNodeType() != 0)
+    //     {
+    //         continue;
+    //     }
+    //     for (uint32_t j = 0; j < node_num; j++)
+    //     {
+    //         if (n.Get(j)->GetNodeType() != 0)
+    //         {
+    //             continue;
+    //         }
+    //         uint64_t delay = pairDelay[n.Get(i)][n.Get(j)];
+    //         uint64_t txDelay = pairTxDelay[n.Get(i)][n.Get(j)];
+    //         NS_LOG_INFO("Node " << i << " to Node " << j << " delay " << delay << " txDelay " << txDelay);
+    //     }
+    // }
 
 	NS_LOG_INFO("Create Applications.");
 

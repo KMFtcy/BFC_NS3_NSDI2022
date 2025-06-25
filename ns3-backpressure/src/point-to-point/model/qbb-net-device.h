@@ -123,6 +123,15 @@ public:
 
    virtual Ptr<Channel> GetChannel (void) const;
 
+  /*
+   * \brief Get the data rate associated with this channel
+   * \returns DataRate data rate
+   */
+  DataRate GetDataRate()
+  {
+      return m_bps;
+  }
+
    virtual uint32_t GetUsedBuffer(uint32_t port, uint32_t qIndex);
 
    void SetQueue (Ptr<BEgressQueue> q);
