@@ -154,6 +154,9 @@ public:
   //virtual uint32_t m_usedQueues;
 protected:
 
+	// sip, dip, sport, dport, pg, start_time, num_packets
+	TracedCallback<uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, Time, uint32_t> m_traceQpComplete; // callback for when a QP is complete
+
 	//Ptr<Node> m_node;
 
   bool TransmitStart (Ptr<Packet> p);

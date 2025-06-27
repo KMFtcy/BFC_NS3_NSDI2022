@@ -61,6 +61,8 @@ namespace ns3 {
 		static TypeId tid = TypeId("ns3::QbbNetDevice")
 			.SetParent<PointToPointNetDevice>()
 			.AddConstructor<QbbNetDevice>()
+			.AddTraceSource ("QpComplete", "A qp completes.",
+				MakeTraceSourceAccessor (&QbbNetDevice::m_traceQpComplete))
 			.AddAttribute("PauseTime",
 				"Number of microseconds to pause upon congestion",
 				UintegerValue(5),
@@ -539,7 +541,7 @@ uint32_t n_int = 10;
 				return;
 			}
 			else{
-				i = queue_index_map[port][qIndex];
+				i = queue_index_map[port][qIndex]; // map flow by port and qIndex
 			}
 
 			if (!m_sendingBuffer[i]->IsEmpty())
@@ -597,6 +599,9 @@ uint32_t n_int = 10;
 			qbbHeader qbbh;
 			p->Copy()->RemoveHeader(qbbh);
 
+			UdpHeader udph;
+			p->PeekHeader(udph);
+
 			int qIndex = qbbh.GetPG();
 			int seq = qbbh.GetSeq();
 			int port = qbbh.GetPort();
@@ -647,7 +652,8 @@ uint32_t n_int = 10;
 						}
 					}
 	                if(seq>=m_lastseq[i] && m_available_queue[i]) {
-	                    std::cout<<"Flow finished at qbbid "<<qbbid<< " at "<<Simulator::Now()<<" at port"<<port<<" Num packets:"<<m_lastseq[i]<<", Time taken :"<<Simulator::Now()-starting_times[port]<<" qindex "<< qIndex<<" \n";
+						m_traceQpComplete(ipv4h.GetDestination().Get(), ipv4h.GetSource().Get(), udph.GetDestinationPort(), udph.GetSourcePort(), qIndex, starting_times[port], m_lastseq[i]); // the reverse of the source and destination in ack
+	                    // std::cout<<"Flow finished at qbbid "<<qbbid<< " at "<<Simulator::Now()<<" at port"<<port<<" Num packets:"<<m_lastseq[i]<<", Time taken :"<<Simulator::Now()-starting_times[port]<<" qindex "<< qIndex<<" \n";
 	                    queue_index_map[port].erase(qIndex);
 	                    while(!m_sendingBuffer[i]->IsEmpty()) m_sendingBuffer[i]->Dequeue();
 	                    available_sending_queues.push(i);
@@ -836,7 +842,7 @@ uint32_t n_int = 10;
 			        	starting_times[port] = Simulator::Now();
 
 			        	//m_rate[i] = m_bps;
-			        	std::cout<<"Starting flow at "<<starting_times[port]<<" port "<<port<<" qbbid "<<qbbid<<" qindex "<<qIndex<<" IP "<<ipv4h.GetSource()<<" \n";
+			        	// std::cout<<"Starting flow at "<<starting_times[port]<<" port "<<port<<" qbbid "<<qbbid<<" qindex "<<qIndex<<" IP "<<ipv4h.GetSource()<<" \n";
 
 						curr_seq[i] = 0;
 						m_acked[i] = 0;
@@ -1119,7 +1125,7 @@ uint32_t n_int = 10;
                 m_available_receiving[key] = true;
                 receiver_index_map[src.Get()][port].erase(qIndex);
                 available_receiving_queues.insert(key);
-                std::cout<<"Received the last packet on port "<<port<<" at "<<Simulator::Now()<<" qbbid "<<qbbid<<" IP "<<src<<" size "<<size<<" \n";
+                // std::cout<<"Received the last packet on port "<<port<<" at "<<Simulator::Now()<<" qbbid "<<qbbid<<" IP "<<src<<" size "<<size<<" \n";
                 return 1;
             }
 			if (ReceiverNextExpectedSeq[key] > m_milestone_rx[key])

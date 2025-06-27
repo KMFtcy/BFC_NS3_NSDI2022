@@ -51,6 +51,7 @@ uint32_t packet_payload_size = 1000, l2_chunk_size = 4000, l2_ack_interval = 256
 double pause_time = 5, simulator_stop_time = 3.01, app_start_time = 1.0, app_stop_time = 9.0;
 std::string data_rate, link_delay, topology_file, flow_file, tcp_flow_file, trace_file, trace_output_file;
 bool used_port[65536 * 64] = {0};
+std::string fct_output_file = "fct.txt";
 
 struct Interface
 {
@@ -150,6 +151,8 @@ std::ifstream topof, flowf, tracef;
 NodeContainer n;
 // maintain port number for each host pair
 std::unordered_map<uint32_t, unordered_map<uint32_t, uint16_t>> portNumder;
+// maintain ip to node id
+std::unordered_map<uint32_t, uint32_t> ip_to_nodeid;
 
 struct FlowInput
 {
@@ -218,6 +221,36 @@ uint32_t flow_num = 0;
 //         flowf.close();
 //     }
 // }
+
+void
+qp_finish(FILE* fout, std::unordered_map<uint32_t, uint32_t>* ip_to_node_id, uint32_t sip, uint32_t dip, uint32_t sport, uint32_t dport, uint32_t pg, Time start_time, uint32_t num_packets)
+{
+	// print all parameters
+	// NS_LOG_INFO("sip: " << sip << " dip: " << dip << " sport: " << sport << " dport: " << dport << " pg: " << pg << " start_time: " << start_time.GetTimeStep() << " num_packets: " << num_packets);
+    uint32_t sid = ip_to_node_id->at(sip);
+    uint32_t did = ip_to_node_id->at(dip);
+    uint64_t base_rtt = pairDelay[n.Get(sid)][n.Get(did)], b = pairBw[sid][did];
+    uint64_t total_bytes =
+        num_packets * packet_payload_size + num_packets*4;
+    uint64_t standalone_fct = base_rtt + total_bytes * 8000000000lu / b;
+	// NS_LOG_INFO("sid: " << sid << " did: " << did << " base_rtt: " << base_rtt << " b: " << b << " total_bytes: " << total_bytes << " standalone_fct: " << standalone_fct);
+    // // sip, dip, source node id, destination node id, sport, dport,  priority group, size (B), start_time, fct (ns), standalone_fct (ns)
+    fprintf(fout,
+            "%08x %08x %u %u %u %u %lu %lu %lu %lu %lu\n",
+            sip,
+            dip,
+            sid,
+            did,
+            sport,
+            dport,
+            pg,
+            num_packets * packet_payload_size,
+            start_time.GetTimeStep(),
+            (Simulator::Now() - start_time).GetTimeStep(),
+            standalone_fct);
+    fflush(fout);
+
+}
 
 void
 CalculateRoute(Ptr<Node> host)
@@ -484,6 +517,18 @@ int main(int argc, char *argv[])
                 topology_file = v;
                 std::cout << "TOPOLOGY_FILE\t\t\t" << topology_file << "\n";
             }
+			else if (key.compare("FLOW_FILE") == 0)
+            {
+                std::string v;
+                conf >> v;
+                flow_file = v;
+                std::cout << "FLOW_FILE\t\t\t" << flow_file << "\n";
+            }
+			else if (key.compare("FCT_OUTPUT_FILE") == 0)
+            {
+                conf >> fct_output_file;
+                std::cout << "FCT_OUTPUT_FILE\t\t" << fct_output_file << '\n';
+            }
 			else if (key.compare("ENABLE_BUFFER_STATS") == 0)
 			{
 				uint32_t v;
@@ -662,6 +707,7 @@ int main(int argc, char *argv[])
 
 	NS_LOG_INFO("Create channels.");
 
+	FILE* fct_output = fopen(fct_output_file.c_str(), "w");
 	//
 	// Explicitly create the channels required by the topology.
 	//
@@ -711,6 +757,12 @@ int main(int argc, char *argv[])
 
 		fflush(stdout);
 		NetDeviceContainer d = qbb.Install(snode, dnode);
+		Ptr<QbbNetDevice> qbb_dev = DynamicCast<QbbNetDevice>(d.Get(0));
+		qbb_dev->TraceConnectWithoutContext("QpComplete",
+                                             MakeBoundCallback(qp_finish, fct_output, &ip_to_nodeid));
+		qbb_dev = DynamicCast<QbbNetDevice>(d.Get(1));
+		qbb_dev->TraceConnectWithoutContext("QpComplete",
+                                             MakeBoundCallback(qp_finish, fct_output, &ip_to_nodeid));
 
 		// used to create a graph of the topology
         nbr2if[snode][dnode].up = true;
@@ -734,6 +786,16 @@ int main(int argc, char *argv[])
 
 	Ipv4GlobalRoutingHelper::PopulateRoutingTables();
 
+	// update ip_to_nodeid
+	for (uint32_t i = 0; i < node_num; ++i) {
+		if (n.Get(i)->GetNodeType() == 0) { // host
+			Ptr<Ipv4> ipv4 = n.Get(i)->GetObject<Ipv4>();
+			uint32_t ip = ipv4->GetAddress(1, 0).GetLocal().Get();
+			ip_to_nodeid[ip] = i;
+		}
+	}
+	
+	//
 	//
     // get BDP and delay
     //
@@ -765,7 +827,84 @@ int main(int argc, char *argv[])
     // }
 
 	NS_LOG_INFO("Create Applications.");
+// #ifdef false
+	std::mt19937 gen(5489U);						  //Same Seed for all the Simlulations
+	std::mt19937 gen2(5489U);						  //Same Seed for all the Simlulations
+	std::uniform_real_distribution<> dis(0.0, 1.0);
+	// maintain port number for each host
+    for (uint32_t i = 0; i < node_num; i++)
+    {
+        if (n.Get(i)->GetNodeType() == 0)
+        {
+            for (uint32_t j = 0; j < node_num; j++)
+            {
+                if (n.Get(j)->GetNodeType() == 0)
+                {
+                    portNumder[i][j] = 10000; // each host pair use port number from 10000
+                }
+            }
+        }
+    }
+	// read flow file
+	flowf.open(flow_file.c_str());
+	flowf >> flow_num;
+	for (uint32_t i = 0; i < flow_num; i++)
+	{
+		uint32_t src_id, dst_id, pg, dport;
+		size_t flow_size, start_time;
+		size_t flow_packet_count;
+		flowf >> src_id >> dst_id >> pg >> dport >> flow_size >> start_time;
+		NS_ASSERT(n.Get(src_id)->GetNodeType() == 0 && n.Get(dst_id)->GetNodeType() == 0);
+		// get a new port number
+        uint32_t port = portNumder[src_id][dst_id]++;
+		// get server address
+		Ptr<Ipv4> ipv4 = n.Get(dst_id)->GetObject<Ipv4>();
+		Ipv4Address serverAddress = ipv4->GetAddress(1, 0).GetLocal(); //GetAddress(0,0) is the loopback 127.0.0.1
+		// get data rate of client device
+		Ptr<Node> node = n.Get(src_id); // 或 n.Get(dst_id) 或其他你关心的节点
+		uint32_t nDevices = node->GetNDevices();
+		Ptr<NetDevice> dev = n.Get(src_id)->GetDevice(1); // server only has 2 devices:   
+		// Device 0: ns3::LoopbackNetDevice
+		//Device 1: ns3::QbbNetDevice
+		if (dev == nullptr){
+			NS_LOG_INFO("get error at dev");
+		}
+		Ptr<QbbNetDevice> qbb_dev = DynamicCast<QbbNetDevice>(dev);
+		// check if it is null ptr
+		if (qbb_dev == nullptr){
+			NS_LOG_INFO("get error at qbb_dev");
+		}
+		DataRate datarateobj = qbb_dev->GetDataRate();
+		uint64_t datarate = qbb_dev->GetDataRate().GetBitRate();
+		// get packet interval
+		double interarrival = (packet_payload_size * 8) / datarate;
+		Time interPacketInterval = Seconds(interarrival); //800ns assuming 
+		// get flow packet count
+		size_t flow_packet_size;
+		if (flow_size <= packet_payload_size)
+		{
+			flow_packet_size = flow_size;
+			flow_packet_count = 1;
+		}
+		else
+		{
+			flow_packet_size = packet_payload_size;
+			flow_packet_count = int(flow_size / packet_payload_size) + 1;
+		}
 
+		pg = 5 * qcount + uint32_t(dis(gen2) * 1000000000);
+		UdpClientHelper client0(serverAddress, dst_id + 40000, pg, qcount, datarate / 1e9); //Add Priority
+		client0.SetAttribute("MaxPackets", UintegerValue(flow_packet_count));
+		client0.SetAttribute("Interval", TimeValue(interPacketInterval));
+		NS_ASSERT(flow_packet_size > 99);
+		client0.SetAttribute("PacketSize", UintegerValue(flow_packet_size));
+		ApplicationContainer apps0c = client0.Install(n.Get(src_id));
+		apps0c.Start(Seconds(start_time));
+		// apps0c.Stop(Seconds(simulator_stop_time));
+	}
+// #endif
+
+#ifdef false
 	NS_LOG_INFO("Setup Flows Info");
 	uint32_t packetSize = packet_payload_size;
 	//Time interPacketInterval = Seconds(0.0000005 / 2);
@@ -856,6 +995,7 @@ int main(int argc, char *argv[])
 		Ptr<Ipv4> ipv4 = n.Get(dst)->GetObject<Ipv4>();
 		Ipv4Address serverAddress = ipv4->GetAddress(1, 0).GetLocal(); //GetAddress(0,0) is the loopback 127.0.0.1
 
+		// NS_LOG_INFO("Create client - server address: " << serverAddress << " port: " << dst + 40000 << " pg: " << pg << " qcount: " << qcount << " datarate: " << datarate << " maxPacketCount: " << maxPacketCount << " interPacketInterval: " << interPacketInterval << " flow_packet_size: " << flow_packet_size);
 		UdpClientHelper client0(serverAddress, dst + 40000, pg, qcount, datarate); //Add Priority
 		client0.SetAttribute("MaxPackets", UintegerValue(maxPacketCount));
 		client0.SetAttribute("Interval", TimeValue(interPacketInterval));
@@ -922,6 +1062,7 @@ int main(int argc, char *argv[])
 	{
 		std::cout << "Number of incasts done " << incasts_done << "\n";
 	}
+#endif
 
 	std::cout << "Running Simulation.\n";
 	fflush(stdout);
