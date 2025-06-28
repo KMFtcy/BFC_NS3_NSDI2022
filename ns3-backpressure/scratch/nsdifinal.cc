@@ -855,6 +855,9 @@ int main(int argc, char *argv[])
 		size_t flow_size;
 		size_t flow_packet_count;
 		flowf >> src_id >> dst_id >> pg >> dport >> flow_size >> start_time;
+		if (flow_size <= 99) {
+			continue;
+		}
 		NS_ASSERT(n.Get(src_id)->GetNodeType() == 0 && n.Get(dst_id)->GetNodeType() == 0);
 		// get a new port number
         uint32_t port = portNumder[src_id][dst_id]++;
@@ -898,7 +901,7 @@ int main(int argc, char *argv[])
 		client0.SetAttribute("MaxPackets", UintegerValue(flow_packet_count));
 		client0.SetAttribute("Interval", TimeValue(interPacketInterval));
 		// NS_LOG_INFO("index " << i << " flow_packet_size " << flow_packet_size);
-		// NS_ASSERT(flow_packet_size > 99);
+		NS_ASSERT(flow_packet_size > 99);
 		client0.SetAttribute("PacketSize", UintegerValue(flow_packet_size));
 		ApplicationContainer apps0c = client0.Install(n.Get(src_id));
 		apps0c.Start(Seconds(start_time));
