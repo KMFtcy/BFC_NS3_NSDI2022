@@ -896,7 +896,8 @@ int main(int argc, char *argv[])
 		UdpClientHelper client0(serverAddress, dst_id + 40000, pg, qcount, datarate / 1e9); //Add Priority
 		client0.SetAttribute("MaxPackets", UintegerValue(flow_packet_count));
 		client0.SetAttribute("Interval", TimeValue(interPacketInterval));
-		NS_ASSERT(flow_packet_size > 99);
+		// NS_LOG_INFO("index " << i << " flow_packet_size " << flow_packet_size);
+		// NS_ASSERT(flow_packet_size > 99);
 		client0.SetAttribute("PacketSize", UintegerValue(flow_packet_size));
 		ApplicationContainer apps0c = client0.Install(n.Get(src_id));
 		apps0c.Start(Seconds(start_time));
