@@ -118,8 +118,8 @@ namespace ns3 {
 		m_log_end = 2.2;
 		m_log_step = 0.00001;
 		enable_buffer_stats = true;
-        Simulator::Schedule(MicroSeconds(1000001),&BroadcomNode::CheckAndSendPause, this); 
-        Simulator::Schedule(MicroSeconds(1000010),&BroadcomNode::PrintStats, this);
+        Simulator::Schedule(MicroSeconds(2000001),&BroadcomNode::CheckAndSendPause, this); 
+        Simulator::Schedule(MicroSeconds(2000000),&BroadcomNode::PrintStats, this);
 	}
 
 	BroadcomNode::~BroadcomNode()
@@ -341,7 +341,7 @@ namespace ns3 {
 		BroadcomNode::PrintStats()
 	{
 		if(!enable_buffer_stats) return;
-		std::cout<<"T: "<<Simulator::Now()<<" At "<<m_node_id<<" used = "<<m_usedTotalBytes<<"\n";
+			std::cout<<"T: "<<Simulator::Now()<<" At "<<m_node_id<<" used = "<<m_usedTotalBytes<<"\n";
 		Simulator::Schedule(MicroSeconds(10), &BroadcomNode::PrintStats, this);
     }
 	void
