@@ -75,7 +75,7 @@ UdpClient::GetTypeId (void)
                    "Size of packets generated. The minimum packet size is 14 bytes which is the size of the header carrying the sequence number and the time stamp.",
                    UintegerValue (1024),
                    MakeUintegerAccessor (&UdpClient::m_size),
-                   MakeUintegerChecker<uint32_t> (14,1500))
+                   MakeUintegerChecker<uint32_t> (1,1500))
     .AddAttribute ("Queues",
                    "Number of queues",
                     UintegerValue (128),
