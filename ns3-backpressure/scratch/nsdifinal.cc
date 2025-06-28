@@ -851,7 +851,8 @@ int main(int argc, char *argv[])
 	for (uint32_t i = 0; i < flow_num; i++)
 	{
 		uint32_t src_id, dst_id, pg, dport;
-		size_t flow_size, start_time;
+		double start_time;
+		size_t flow_size;
 		size_t flow_packet_count;
 		flowf >> src_id >> dst_id >> pg >> dport >> flow_size >> start_time;
 		NS_ASSERT(n.Get(src_id)->GetNodeType() == 0 && n.Get(dst_id)->GetNodeType() == 0);
